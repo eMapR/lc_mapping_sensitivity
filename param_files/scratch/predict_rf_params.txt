@@ -1,0 +1,9 @@
+train_params; /vol/v1/proj/stem_improv_paper/region_models/region_18/landcover_20180305_1002/train_rf_params.txt
+var_txt; /vol/v1/proj/stem_improv_paper/scripts/param_files/varinfo_all_dateindex.txt
+mask_path; /vol/v1/proj/stem_improv_paper/region_models/region_18/tile_18.tif
+nodata; 255
+rf_path; /vol/v1/proj/stem_improv_paper/region_models/region_18/landcover_20180305_1002/rf_model_landcover_20180305_1002.pkl
+out_dir; /vol/v1/proj/stem_improv_paper/region_models/region_18/landcover_20180305_1002
+
+Optional parameters
+n_tiles; 3, 3

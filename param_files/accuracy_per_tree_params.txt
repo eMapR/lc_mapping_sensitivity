@@ -1,0 +1,17 @@
+Parameters for accuracy_per_tree.py
+
+forest; /vol/v1/proj/stem_improv_paper/test_regions/region_28/landcover_20171121_1451/rf_model_landcover_20171121_1451.pkl
+tile_mosaic; /vol/v1/proj/stem_improv_paper/test_regions/region_28/tile_28.tif
+ref_path; /vol/v1/proj/stem_improv_paper/test_regions/region_28/nlcd_2001_28.tif
+var_txt; /vol/v1/proj/stem_improv_paper/test_regions/region_28/landcover_20171121_1451/varinfo_multidate.txt
+target_col; landcover
+out_txt; /vol/v1/proj/stem_improv_paper/test_regions/region_28/landcover_20171121_1451/evaluation/accuracy_per_tree.txt
+
+Optional parameters
+train_txt; /vol/v1/proj/stem_improv_paper/test_regions/region_28/landcover_proportional_sample_31428_20171109_1908/landcover_proportional_sample_31428_20171109_1908.txt
+test_txt
+pred_path; /vol/v1/proj/stem_improv_paper/test_regions/region_28/landcover_20171121_1451/landcover_20171121_1451_rf_vote.tif
+bins
+r_nodata
+temp_nodata
+n_per_bin; 10000
