@@ -83,11 +83,8 @@ def main(param_txt):
     write_params(train_param_txt, params, train_params, optional_params)
     rf_path = train_rf.main(train_param_txt)
     model_dir = os.path.dirname(rf_path)
-    try:
-        var_info_txt = os.path.join(model_dir, os.path.basename(params['var_txt']))
-        plot_importance.main(var_info_txt)
-    except Exception as e:
-        print "plotting didn't work because", e
+    var_info_txt = os.path.join(model_dir, os.path.basename(params['var_txt']))
+    plot_importance.main(var_info_txt)
     
     # predict
     train_params = os.path.join(model_dir, 'train_rf_params.txt')
