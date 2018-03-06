@@ -260,14 +260,14 @@ def clipAndDecompose(chunkDir, outDir, clipFile,  njobs=0, tileIdField='name', p
                 if os.path.exists(outFile):
                     continue
                 bands = ' -b '+' -b '.join([str(band) for band in bandRanges[i]])
-                cmd = 'gdal_translate -q --config GDAL_DATA "/usr/lib/anaconda/share/gdal" -of GTiff -a_srs ' + proj + bands + ' -projwin '+projwin+' '+ vrtFile + ' ' + outFile
+                cmd = 'gdal_translate -q --config GDAL_DATA "/usr/lib/anaconda/share/gdal" -of GTiff -co "TILED=YES" -co "INTERLEAVE=BAND" -co "BIG_TIFF=YES" -a_srs ' + proj + bands + ' -projwin '+projwin+' '+ vrtFile + ' ' + outFile
                 commands.append((outFile, cmd, c, nCommands, t0))
                 c += 1
             feature = layer.GetNextFeature()
             i += 1
         if i != nTiles:
             raise RuntimeError('%s is not a valid filter string for clipFile %s' % (filterString, clipFile))
-    
+
     if njobs > 1:
         pool = multiprocessing.Pool(njobs)
         pool.map(call, commands, chunksize=1)
