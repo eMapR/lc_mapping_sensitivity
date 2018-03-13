@@ -4,23 +4,26 @@ Created on Tue Oct 31 13:48:29 2017
 
 @author: shooper
 
-Usage
-make_region_masks.py <region_path> <tile_path> <reference_path> <out_dir> [id_field]
+Usage:
+    make_region_masks.py <region_path> <tile_path> <reference_path> <out_dir> --[id_field=<str>]
 
-region_path - path to vector file where each feature is the boundary of a region
-tile_path - path to vector file where each feature is a tile
-reference_path - path to reference raster (e.g. NLCD)
-out_dir - top level output directory
+    region_path - path to vector file where each feature is the boundary of a region
+    tile_path - path to vector file where each feature is a tile
+    reference_path - path to reference raster (e.g. NLCD)
+    out_dir - top level output directory
 
-Optional parameters
-id_field - field in region_path vector containing unique IDs
+Options:
+    -h, --help        show this screen
+    --id_field=<str>  field in region_path vector containing unique IDs
 
 example:
 make_region_masks.py /vol/v1/proj/stem_improv_paper/vector/regions/study_regions.shp /vol/v1/general_files/datasets/spatial_data/conus_tile_system/conus_tile_system_15_sub_epsg5070.shp /vol/v1/general_files/datasets/spatial_data/nlcd/nlcd_2001_v2/nlcd_2001_landcover_clipped_to_conus_tiles.tif /vol/v1/proj/stem_improv_paper/region_models
 """
 
-import os, sys
+import os
+import sys
 from osgeo import gdal, ogr
+import re
 import pandas as pd
 import numpy as np
 
@@ -74,7 +77,8 @@ def main(region_path, tile_path, reference_path, out_dir, id_field='region_id'):
             coords_to_shp(region_tiles, region_path, out_vector)
         
         # Make a map of reference NLCD
-        out_ref_map = os.path.join(region_dir, 'nlcd_2001_%s.tif' % id_str)
+        nlcd_year = re.search('\d\d\d\d', reference_path).group() # finds the first one (potentially buggy)
+        out_ref_map = os.path.join(region_dir, 'nlcd_%s_%s.tif' % (nlcd_year, id_str))
         if not os.path.exists(out_ref_map):
             ref_ds = gdal.Open(reference_path)
             ref_tx = ref_ds.GetGeoTransform()
