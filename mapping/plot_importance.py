@@ -100,11 +100,12 @@ def main(var_info_txt):#, sample_txt):
     out_dir = os.path.join(os.path.dirname(var_info_txt), 'evaluation')
     if not os.path.isdir(out_dir):
         os.mkdir(out_dir)
-    out_png = os.path.join(out_dir, 'importance_plot.png')
+    region = os.path.basename(os.path.dirname(os.path.dirname(var_info_txt))).split('_')[1]
+    out_png = os.path.join(out_dir, 'importance_plot_%s.png' % region)
     plt.savefig(out_png, dpi=300)
     print'\nImportance plot saved to', out_png
     
-    out_txt = out_png.replace('_plot.png', '.txt')
+    out_txt = out_png.replace('_plot', '')
     df.sort_index().to_csv(out_txt, sep='\t')
     
     print '\nSum of run indices:\n', sum_run.sort_values()
