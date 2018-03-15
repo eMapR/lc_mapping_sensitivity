@@ -4,8 +4,10 @@
 Run LandTrendr for the specified indices/dates (calls getGdriveFiles() from lt_gee_processing.py)
 
 Usage:
-    run_LT.py <param_file>
-    run_LT.py -h | --help
+    run_lt.py <param_file>
+    run_lt.py -h | --help
+    
+    param_file - file ending in .py with all params specified
 
 Options:
     -h --help      Show this screen.
@@ -16,21 +18,21 @@ Options:
 
 import os
 import sys
+import re
+import docopt
 import warnings
 import pandas as pd
 import ee
 ee.Initialize()
 
-import lt_gee_processing as ltgee
+import lt_gee_processing as ltee
 
 
-if __name__ == '__main__':
+def main(sleep=.5, njobs=10, silent=True):
     
-    sys.path.append(os.path.dirname(sys.argv[1]))
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore') # raises SyntaxWarning because of *
-        from run_lt_params import * # brings all variables into namespace
-    sys.exit(ltgee.run_lt(featureCol,
+    gDrive = ltee.authenticateGDrive()
+    
+    '''tasks = ltee.run_lt(featureCol,
                           featureKey,
                           featureValue,
                           aoiBuffer,
@@ -44,5 +46,31 @@ if __name__ == '__main__':
                           targetDay,
                           gDriveFolder,
                           outProj,
-                          affine))#'''
+                          affine)#'''
+    
+    tasks = []
+    if 'outDirPath' in globals():
+        ltee.listenAndDownladTasks(tasks, outDirPath, gDriveFolder, gDrive, silent=False)#'''
+    
+
+
+
+if __name__ == '__main__':
+    try:
+        cl_args = docopt.docopt(__doc__)
+    except docopt.DocoptExit as e:
+        import pdb; pdb.set_trace()
+        print e.message
+    
+    # get rid of extra characters and 'help' entry from doc string 
+    args = {re.sub('[<>-]*', '', k): v for k, v in cl_args.iteritems()
+            if k not in ['--help','-h']} 
+
+    sys.path.append(os.path.dirname(sys.argv[1]))
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore') # raises SyntaxWarning because of *
+        from run_lt_params import * # brings all variables into namespace
+    
+    sys.exit(main())
+    
     
