@@ -16,7 +16,7 @@ Options:
 
 import sys
 import re
-import lt_gee_processing as lt
+import lt_gee_processing as ltee
 import docopt
 
 
@@ -36,4 +36,4 @@ if __name__ == '__main__':
     except:
         raise ValueError('njobs not understood: ' + args['njobs'])
     
-    sys.exit(lt.getGdriveFiles(**args))
+    sys.exit(ltee.getGdriveFiles(**args))
