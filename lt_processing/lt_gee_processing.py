@@ -33,6 +33,8 @@ from lthacks import createMetadata
 # #######################################################################################
 
 
+OAUTH_DIR = '/vol/v1/general_files/script_library/earth_engine/'
+
 def harmonizationRoy(oli):
     ''' Align L8 and l7 
     slope and intercept citation: Roy, D.P., Kovalskyy, V., Zhang, H.K., Vermote, E.F., Yan, L., Kumar, S.S, Egorov, A., 2016, Characterization of Landsat-7 to Landsat-8 reflective wavelength and normalized difference vegetation index continuity, Remote Sensing of Environment, 185, 57-70.(http:#dx.doi.org/10.1016/j.rse.2015.12.024); Table 2 - reduced major axis (RMA) regression coefficients
@@ -235,7 +237,7 @@ def makeLtStack(img):
     elif index == 'B3':   indexImg = img.select(['B3']).multiply(indexFlip)
     else:
         raise RuntimeError('The index you provided is not supported: %s' % index)
-        
+    
     tc = tc.select(['TCB', 'TCG', 'TCW'],['FTV_TCB', 'FTV_TCG', 'FTV_TCW']);
     ndvi = ndviTransform(img).select(['NDVI'],['FTV_NDVI']);
     ndsi = ndsiTransform(img).select(['NDSI'],['FTV_NDSI']);
@@ -248,19 +250,7 @@ def makeLtStack(img):
                         .set('system:time_start', img.get('system:time_start'));
     
     return allStack;
-
-
-
-
-# #######################################################################################
-# #######################################################################################
-# #######################################################################################
-
-
-'''def launchTask(task, log_file):
-    with open(log_file, 'a') as txt:'''
         
-
 
 # #######################################################################################
 # ###### LANDTRENDR #####################################################################
@@ -301,7 +291,8 @@ def getLTvertStack(LTresult, run_params):
     return ltVertStack;
 
 
-def run_lt(featureCol, featureKey, featureValue, aoiBuffer, indexDict, startYear, endYear, run_params, startDay, endDay, mosaicType, targetDay, gDriveFolder, outProj, affine):   
+def run_lt(featureCol, featureKey, featureValue, aoiBuffer, indexDict, startYear, endYear, run_params, startDay, endDay, mosaicType, targetDay, gDriveFolder, outProj, affine, trackTasks=True):
+    t0 = time.time()
     # get geometry stuff
     # # load the aoi
     #... filter by park - left arg is the key name, right arg is the value to match
@@ -333,10 +324,11 @@ def run_lt(featureCol, featureKey, featureValue, aoiBuffer, indexDict, startYear
     global indexFlip
     
     tasks = []
-    for i in range(len(startDay)):
+    for i in [0]:#range(len(startDay)):
         # build the annual SR collection
         annualSRcollection = buildMosaicCollection(startYear, endYear, startDay[i], endDay[i], box, mosaicType, targetDay, dummyCollection); # put together the cloud-free medoid surface reflectance annual time series collection
-        for index, indexFlip in indexDict.iteritems():#range(len(indexList)):
+        #for index, indexFlip in indexDict.iteritems():
+        for index, indexFlip in [['NBR', 1]]:
             #get the index and the index flipper
             #index, indexFlip = indexList[j]; # pull out the index to segment on and value to flip index or not
             
@@ -404,37 +396,168 @@ def run_lt(featureCol, featureKey, featureValue, aoiBuffer, indexDict, startYear
             print task.status()['id']
             tasks.append(task)
     
+    def getStatus():
+        allTasks = pd.DataFrame(ee.data.getTaskList())
+        
+        # Create a dataframe index based on the task creation time.
+        taskStatus = allTasks.copy()
+        taskStatus.index = pd.to_datetime(taskStatus['creation_timestamp_ms'], unit='ms')
+        del(taskStatus['creation_timestamp_ms'])
+        
+        # Convert the start and update timestamps to Python data types.
+        taskStatus.start_timestamp_ms = pd.to_datetime(taskStatus.start_timestamp_ms, unit='ms')
+        taskStatus = taskStatus.loc[taskStatus.index > pd.to_datetime(t0, unit='s')]
+        return taskStatus
+    taskStatus = getStatus()
+    task_ids = taskStatus['id']#'''
     
-    taskStatus = pd.DataFrame([t.status() for t in tasks])
+    if trackTasks:
+        taskStatus = pd.DataFrame([t.status() for t in tasks])
+        taskStatus['active'] = True
+        nTasks = float(len(tasks))
+        SLEEP = .5
+        t1 = time.time()
+        # Wait until all tasks have finished running 
+        #while taskStatus['active'].any():
+        while taskStatus.state.isin(['READY', 'RUNNING']).any():
+            time.sleep(SLEEP)
+            #inactive = taskStatus[~taskStatus.active]
+            taskStatus = getStatus()
+            inactive = taskStatus[~taskStatus.state.isin(['READY', 'RUNNING'])]
+            failed = inactive[inactive.state.isin(['FAILED', 'CANCELED', 'CANCEL_REQUESTED'])]
+            complete = inactive[inactive.state == 'COMPLETE']
+            nFinished = len(complete) + len(failed)
+            cumTime = time.time() - t1
+            msg = '\r%s of %d (%.1f%%) tasks done | cum. time: %.1f mins' % (nFinished, nTasks, (nFinished/nTasks) * 100, cumTime/60)
+            sys.stdout.write(msg)
+            sys.stdout.flush()
+            '''taskStatus = pd.DataFrame([t.status() for t in tasks])#retrieve new status
+            taskStatus['active'] = [t.active() for t in tasks] #update active column'''
+            
+        if len(failed) > 0:
+            print '\n\nIDs of failed tasks:\n\t' + '\n\t'.join(failed['id'].tolist())#'''
+
+    return tasks, gDriveFolder
+
+
+def authenticateGDrive():
+    
+    workingDir = os.getcwd()
+    os.chdir(OAUTH_DIR) # oAuth looks for client secrets file here
+    
+    # authenticate gDrive application and request access to gDrive account
+    gauth = GoogleAuth()
+    gauth.LocalWebserverAuth() # creates local webserver and auto handles authentication.
+    gDrive = GoogleDrive(gauth)
+    
+    os.chdir(workingDir) # Switch back to workingDir
+    
+    return gDrive
+
+
+def listenAndDownladTasks(tasks, outDirPath, gDriveFolder, gDrive=None, sleep=.5, njobs=10, silent=True):
+    
+    # If gdrive hasn't been authenticated yet, authenticate
+    if gDrive == None:
+        gDrive = authenticateGDrive()
+
+    if not os.path.isdir(outDirPath):
+        os.mkdir(outDirPath)
+    
+    def _process_queue(in_queue):#, out_queue):
+        while True:
+            args = in_queue.get() #Blocks until something is ready
+            if args is None:
+                break
+            return_args = download_file(*args)
+            if return_args is not None: #Download failed
+                in_queue.put(args) # Put it back in the que and try again
+            '''
+            # Let out_queue know the file has been processed
+            else:
+                out_queue.put()'''
+    
+    # Start all proceses. They won't do anything until there's something in the queue
+    queue = multiprocessing.Queue()
+    pool = multiprocessing.Pool(njobs, _process_queue, (queue,))
+    
+    # Get task progress info
+    '''taskStatus = pd.DataFrame([t.status() for t in tasks])
     taskStatus['active'] = True
+    taskStatus['downloading'] = False
     nTasks = float(len(tasks))
-    sleep = .5
     t0 = time.time()
-    # Wait until all tasks have finished running 
-    while taskStatus['active'].any():
-        time.sleep(sleep)
-        inactive = taskStatus[~taskStatus.active]
-        failed = inactive[inactive.state.isin(['FAILED', 'CANCELED', 'CANCEL_REQUESTED'])]
-        complete = inactive[inactive.state == 'COMPLETE']
-        nFinished = len(complete) + len(failed)
-        cumTime = time.time() - t0
-        msg = '\r%s of %d (%.1f%%) tasks done | cum. time: %.1f mins' % (nFinished, nTasks, (nFinished/nTasks) * 100, cumTime/60)
-        sys.stdout.write(msg)
-        sys.stdout.flush()
-        taskStatus = pd.DataFrame([t.status() for t in tasks])#retrieve new status
-        taskStatus['active'] = [t.active() for t in tasks] #update active column
+    while taskStatus['active'].any() or not taskStatus['downloading'].all():'''
+    t0 = 1521135350
+    def getStatus():
+        allTasks = pd.DataFrame(ee.data.getTaskList())
+        
+        # Create a dataframe index based on the task creation time.
+        taskStatus = allTasks.copy()
+        taskStatus.index = pd.to_datetime(taskStatus['creation_timestamp_ms'], unit='ms')
+        del(taskStatus['creation_timestamp_ms'])
+        
+        # Convert the start and update timestamps to Python data types.
+        taskStatus.start_timestamp_ms = pd.to_datetime(taskStatus.start_timestamp_ms, unit='ms')
+        taskStatus = taskStatus.loc[taskStatus.index > pd.to_datetime(t0, unit='s')]
+        return taskStatus
+    taskStatus = getStatus()
     
+    #taskStatus = pd.DataFrame([t.status() for t in tasks])
+    taskStatus['active'] = True
+    # nTasks = len(tasks)
+    nTasks = 7
+    SLEEP = .5
+    t1 = time.time()
+    # Wait until all tasks have finished running 
+    #while taskStatus['active'].any():
+    taskStatus['downloading'] = False
+    while taskStatus.state.isin(['READY', 'RUNNING', 'COMPLETED']).any():
+        #inactive = taskStatus[~taskStatus.active]
+        '''# Update status
+        taskStatus.state = pd.DataFrame([t.status() for t in tasks])['state']#update state
+        taskStatus['active'] = [t.active() for t in tasks] #update active column'''
+        taskStatus['state'] = getStatus()['state']
+        failed = taskStatus[taskStatus.state.isin(['FAILED', 'CANCELLED', 'CANCEL_REQUESTED'])]
+        complete = taskStatus[taskStatus.state == 'COMPLETED']
+        downloadReady = complete[~complete.downloading]# EE complete, but not downloading yet
+        nFinished = len(complete) + len(failed)
+        
+        if not silent:
+            cumTime = time.time() - t1
+            msg = '\r%s of %d (%.1f%%) tasks done | cum. time: %.1f mins' % (nFinished, nTasks, (nFinished/nTasks) * 100, cumTime/60)
+            sys.stdout.write(msg)
+            sys.stdout.flush()
+
+        # Check if download hasn't yet started for any complete files 
+        if len(downloadReady) > 0:
+            searchStrs = [task.description + '*' for i, task in downloadReady.iterrows()]
+            readyInfo = listDriveFiles(gDrive, gDriveFolder, searchPatterns=searchStrs)
+            for fileInfo in readyInfo.iterrows():
+                queue.put([fileInfo, gDrive, outDirPath, 0])
+            # Set download status to True
+            taskStatus.loc[downloadReady.index, 'downloading'] = True
+        
+        if (taskStatus.downloading | taskStatus.index.isin(failed.index)).all():
+            break
+    
+    # Close all processes
+    for _ in range(njobs): 
+        queue.put(None) # add kill switch to break out of while loop
+    pool.close()
+    pool.join()
+        
     if len(failed) > 0:
         print '\n\nIDs of failed tasks:\n\t' + '\n\t'.join(failed['id'].tolist())
 
 
 # define function to download tif files found in gDrive folder - called by multiprocessing.Pool().map()
-def download_file(fileInfo, outDirPath, nFiles, startTime):
+def download_file(fileInfo, gDrive, outDirPath, startTime, nFiles=None):
     
     i, fileInfo = fileInfo
     
     fileName = fileInfo['title']
-    getFile = drive.CreateFile({'id': fileInfo['id']})
+    getFile = gDrive.CreateFile({'id': fileInfo['id']})
 
     try:
         getFile.GetContentFile(os.path.join(outDirPath, fileName)) # Download file
@@ -443,36 +566,77 @@ def download_file(fileInfo, outDirPath, nFiles, startTime):
         logFile = os.path.join(outDirPath, 'error_log.txt')
         with open(logFile, 'a') as f:
             f.write('%s\n%s\nfile: %s\n\n' % (time.ctime(time.time()), e, fileName))
+        return [fileInfo, gDrive, outDirPath, startTime, nFiles]
     
-    cumTime = time.time() - startTime
-    formatObj = i + 1, nFiles, float(i + 1)/nFiles * 100, cumTime/60
-    sys.stdout.write('\rDownloaded file %s of %s (%.1f%%) | cum. time: %.1f mins.' % formatObj)
-    sys.stdout.flush()
+    if nFiles:
+        cumTime = time.time() - startTime
+        formatObj = i + 1, nFiles, float(i + 1)/nFiles * 100, cumTime/60
+        sys.stdout.write('\rDownloaded file %s of %s (%.1f%%) | cum. time: %.1f mins.' % formatObj)
+        sys.stdout.flush()
+
+  
+def getIncompleteFiles(fileInfo, outDirPath):
+    '''Find any files that have not been completely downloaded'''
     
+    fileInfo['localPath'] = fileInfo.title.apply(
+                    lambda z: os.path.join(outDirPath, z))
+    existing = fileInfo[fileInfo.localPath.apply(
+                    lambda z: os.path.exists(z))]
+    unfinished = existing[existing.fileSize.astype(int) !=\
+                  existing.localPath.apply(lambda z: os.stat(z).st_size)]
+    # find files that either didn't finish or that don't exist locally
+    fileInfo = pd.concat([unfinished, 
+                       fileInfo[~fileInfo.title.isin(existing.title)]],
+                       ignore_index=True)
 
+    return fileInfo
 
-def getGdriveFiles(gDirName, outDirPath, njobs=4):
+  
+def listDriveFiles(gDrive, gDirName, outDirPath=None, searchPatterns=None):
+    '''List files in Google Drive folder `gDriveFolder`. If `outDirPath` 
+    is given, return only files that have not been completely downloaded. If
+    `searchPatterns` is given, return only files that match any of patterns'''
+    
+    # List files in gDrive folder
+    gDriveFolder = gDrive.ListFile({'q': "mimeType='application/vnd.google-apps.folder' and title contains '"+gDirName+"'"}).GetList()
+    query = "'%s' in parents and title contains '.tif'" % gDriveFolder[0]['id']
+    fileInfo = pd.DataFrame(gDrive.ListFile({'q': query}).GetList())
+    
+    if outDirPath:
+        fileInfo = getIncompleteFiles(fileInfo, outDirPath)
+    
+    # Filter out files that don't match one of the searchPatterns
+    if searchPatterns:
+        # If a single pattern is given, make it a list
+        if not hasattr(searchPatterns, '__iter__'):
+            searchPatterns = list(searchPatterns)
+        matches = []
+        for pattern in searchPatterns:
+            matches.extend(fnmatch.filter(fileInfo.title, pattern))
+        fileInfo = fileInfo[fileInfo.title.isin(matches)]
+    
+    return fileInfo
+        
+
+def getGdriveFiles(gDirName, outDirPath, njobs=4, gDrive=None, searchPatterns=None):
     t0 = time.time()
     njobs = int(njobs)
     outDirPath = os.path.abspath(outDirPath)
-    os.chdir('/vol/v1/general_files/script_library/earth_engine/') #GoogleAuth looks in here for an authorization file - could pass the file as an argument and the get the os.path.dirname
-
-    # authenticate gDrive application and request access to gDrive account
-    gauth = GoogleAuth()
-    gauth.LocalWebserverAuth() # creates local webserver and auto handles authentication.
-    global drive 
-    drive = GoogleDrive(gauth)
+    
+    # If gdrive hasn't been authenticated yet, authenticate
+    if gDrive == None:
+        gDrive = authenticateGDrive()
     
     # find files in the specified gDrive folder
-    gDir = drive.ListFile({'q': "mimeType='application/vnd.google-apps.folder' and title contains '"+gDirName+"'"}).GetList()
+    gDir = gDrive.ListFile({'q': "mimeType='application/vnd.google-apps.folder' and title contains '"+gDirName+"'"}).GetList()
     if len(gDir) == 1:
         # create the output folder if it does not already exist
         if not os.path.isdir(outDirPath):
             os.mkdir(outDirPath)
         
         # List files in gDrive folder
-        query = "'%s' in parents and title contains '.tif'" % gDir[0]['id']
-        fileList = pd.DataFrame(drive.ListFile({'q': query}).GetList())
+        '''query = "'%s' in parents and title contains '.tif'" % gDir[0]['id']
+        fileList = pd.DataFrame(gDrive.ListFile({'q': query}).GetList())
         
         def getIncompleteFiles(fileInfo):
             #fileInfo = pd.DataFrame(fileList)
@@ -489,7 +653,9 @@ def getGdriveFiles(gDirName, outDirPath, njobs=4):
             #return [dict(r) for i, r in fileList.iterrows()]#back to what download_files expects
             return files
         
-        files = getIncompleteFiles(fileList)
+        files = getIncompleteFiles(fileList)'''
+        
+        files = listDriveFiles(gDrive, gDir, outDirPath, searchPatterns)
         
         if len(files) == 0:
             sys.exit('No incomplete or un-downloaded files found in %s' % gDirName)
@@ -505,15 +671,15 @@ def getGdriveFiles(gDirName, outDirPath, njobs=4):
             t1 = time.time()
             if njobs > 1:
                 pool = multiprocessing.Pool(processes=njobs)
-                func = partial(download_file, outDirPath=outDirPath, nFiles=nRemaining, startTime=t1)
+                func = partial(download_file, gDrive=gDrive, outDirPath=outDirPath, startTime=t1, nFiles=nRemaining)
                 pool.map(func, files.iterrows(), chunksize=1)
                 pool.close()
                 pool.join()
             else:
-                for f in files.iterrows(): download_file(f, outDirPath, nRemaining, t1)
+                for f in files.iterrows(): download_file(f, outDirPath, t1, nRemaining)
             
             # Check if any files didn't complete
-            files = getIncompleteFiles(files)
+            files = getIncompleteFiles(files, outDirPath)
             nRemaining = len(files)
             njobs = min(njobs, nRemaining)
             
@@ -684,6 +850,4 @@ def clipAndDecompose(chunkDir, outDir, clipFile,  njobs=0, tileIdField='name', p
     shutil.rmtree(chunkDir)
     
     print '\n\nTotal processing time: %.1f minutes' % ((time.time() - t0)/60)
-    
-    if returnOutDirs:
-        return outputDirs
+
