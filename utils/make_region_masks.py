@@ -4,8 +4,10 @@ Created on Tue Oct 31 13:48:29 2017
 
 @author: shooper
 
+Make masks/reference rasters clipped to the shape of each study region
+
 Usage:
-    make_region_masks.py <region_path> <tile_path> <reference_path> <out_dir> --[id_field=<str>]
+    make_region_masks.py <region_path> <tile_path> <reference_path> <out_dir> [--id_field=<str>]
 
     region_path - path to vector file where each feature is the boundary of a region
     tile_path - path to vector file where each feature is a tile
@@ -14,14 +16,16 @@ Usage:
 
 Options:
     -h, --help        show this screen
-    --id_field=<str>  field in region_path vector containing unique IDs
+    --id_field=<str>  field in region_path vector containing unique IDs[default: region_id]
 
 example:
-make_region_masks.py /vol/v1/proj/stem_improv_paper/vector/regions/study_regions.shp /vol/v1/general_files/datasets/spatial_data/conus_tile_system/conus_tile_system_15_sub_epsg5070.shp /vol/v1/general_files/datasets/spatial_data/nlcd/nlcd_2001_v2/nlcd_2001_landcover_clipped_to_conus_tiles.tif /vol/v1/proj/stem_improv_paper/region_models
+make_region_masks.py /vol/v1/proj/stem_improv_paper/vector/regions/study_regions.shp /vol/v1/proj/stem_improv_paper/vector/regions/study_region_tiles.shp /vol/v1/general_files/datasets/spatial_data/nlcd/nlcd_2001_v2/nlcd_2001_landcover_clipped_to_conus_tiles.tif /vol/v1/proj/stem_improv_paper/region_models
+
 """
 
 import os
 import sys
+import docopt
 from osgeo import gdal, ogr
 import re
 import pandas as pd
@@ -117,7 +121,18 @@ def main(region_path, tile_path, reference_path, out_dir, id_field='region_id'):
 
 
 if __name__ == '__main__':
-    sys.exit(main(*sys.argv[1:]))
+    
+    try:
+        cl_args = docopt.docopt(__doc__)
+    except docopt.DocoptExit as e:
+        import pdb; pdb.set_trace()
+        print e.message
+    
+    # get rid of extra characters and 'help' entry from doc string 
+    args = {re.sub('[<>-]*', '', k): v for k, v in cl_args.iteritems()
+            if k not in ['--help','-h']} 
+    sys.exit(main(**args))
+    #sys.exit(main(*sys.argv[1:]))
         
     
     
