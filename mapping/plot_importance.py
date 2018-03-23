@@ -105,7 +105,7 @@ def main(var_info_txt):#, sample_txt):
     plt.savefig(out_png, dpi=300)
     print'\nImportance plot saved to', out_png
     
-    out_txt = out_png.replace('_plot', '')
+    out_txt = out_png.replace('_plot', '').replace('.png','.txt')
     df.sort_index().to_csv(out_txt, sep='\t')
     
     print '\nSum of run indices:\n', sum_run.sort_values()
