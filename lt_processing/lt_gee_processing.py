@@ -78,6 +78,14 @@ def getSRcollection(year, startDay, endDay, sensor, box):
                     .resample('bicubic')\
                     .set('system:time_start', img.get('system:time_start'))
                     ));
+        qa = img.select('pixel_qa')
+        #Shadow
+        # ..snow
+        # ..cloud
+        mask = qa.bitwiseAnd(8).eq(0)\
+                .And(qa.bitwiseAnd(16).eq(0))\
+                .And(qa.bitwiseAnd(32).eq(0))
+        datMasked = dat.mask(mask)        
         cloudMask = img.select('pixel_qa').bitCount().lte(2); # select out the fmask layer and create a 0/1 mask - set 0,1 to 1, all else to 0; 0=clear; 1=water; 2=shadow; 3=snow; 4=cloud
         datMasked = dat.mask(cloudMask); #apply the mask - 0's in mask will be excluded from computation and set to opacity=0 in display
         return datMasked; # return     
