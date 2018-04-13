@@ -11,6 +11,7 @@ Created on Fri Feb 23 11:27:18 2018
 import os
 import sys
 import time
+import glob
 import multiprocessing
 import shutil
 import fnmatch
@@ -26,7 +27,7 @@ import pandas as pd
 import ee
 ee.Initialize()
 
-from lthacks import createMetadata
+from lthacks import createMetadata, attributes_to_df
 
 # #######################################################################################
 # ###### ANNUAL SR TIME SERIES STACK BUILDING FUNCTIONS #################################
@@ -462,18 +463,77 @@ def authenticateGDrive():
     
     return gDrive
 
+def getStatus(startTime, tasks=None, taskFilter='*', columns=None):
+    
+    if tasks is None:
+        allTasks = pd.DataFrame(ee.data.getTaskList())
+    else:
+        allTasks = pd.DataFrame([t.status() for t in tasks])
+    
+    if '!' in taskFilter:
+        pattern, notpattern = taskFilter.split('!')
+        matches = fnmatch.filter(allTasks.description, pattern)
+        notmatches = fnmatch.filter(allTasks.description, notpattern)
+        matches = [m for m in matches if m not in notmatches]
+    else:
+        matches = fnmatch.filter(allTasks.description, taskFilter)
+    
+    # Create a dataframe index based on the task creation time.
+    taskStatus = allTasks[allTasks.description.isin(matches)].copy()
+    taskStatus.index = pd.to_datetime(taskStatus['creation_timestamp_ms'], unit='ms')
+    del(taskStatus['creation_timestamp_ms'])
+    
+    # Convert the start and update timestamps to Python data types.
+    taskStatus.start_timestamp_ms = pd.to_datetime(taskStatus.start_timestamp_ms, unit='ms')
+    taskStatus = taskStatus.loc[taskStatus.index > pd.to_datetime(startTime, unit='s')]
+    
+    return taskStatus
+    
+    
+def _downloadFromQueue(inQueue, downloadList):#, out_queue):
 
-def listenAndDownladTasks(tasks, downloadDir, gDriveFolder, gDrive=None, outDir=None, clipFile=None, sleep=.5, njobs=10, silent=True):
+    while True:
+        args = inQueue.get() #Blocks until something is ready
+        if args is None:
+            print '\n#######None########\n'
+            break
+        return_args = download_file(*args)
+        if return_args is not None: #Download failed
+            inQueue.put(args) # Put it back in the queue and try again
+        
+        # Let out_queue know the file has been processed
+        else:
+            outFile = args[0][1]['title']#first arg, 1th item is fileInfo series
+            downloadList.append(outFile)#'''
+
+
+def _callTranslateFromQueue(inQueue, downloadedList):#, out_queue):
+
+    while True:
+        cmd = inQueue.get() #Blocks until something is ready
+        print cmd
+        if cmd is None:
+            print '\n#########None############\n'
+            break
+        callTranslate(cmd)
+            
+            
+def listenAndDownladTasks(tasks, downloadDir, gDriveFolder, gDrive=None, outDir=None, clipFile=None, sleep=.5, njobs=10, silent=True, timestamp_offset=30, logFile=False):
     
     # check that clipFile exists if outDir was specified
     if outDir:
-        clipFileCheck = ogr.Open(clipFile)
+        try:
+            clipFileCheck = ogr.Open(clipFile)
+        except:
+             raise RuntimeError('clipFile is not a valid OGR readable file: %s' % clipFile)
         if not clipFileCheck:
             raise RuntimeError('clipFile is not a valid OGR readable file: %s' % clipFile)
         clipFileCheck = None
         if not os.path.isdir(outDir):
             os.mkdir(outDir)
-        
+    
+    if logFile:
+        logFile = os.path.join(downloadDir, 'download_log.csv')
     # If gdrive hasn't been authenticated yet, authenticate
     if gDrive == None:
         gDrive = authenticateGDrive()
@@ -481,99 +541,106 @@ def listenAndDownladTasks(tasks, downloadDir, gDriveFolder, gDrive=None, outDir=
     if not os.path.isdir(downloadDir):
         os.mkdir(downloadDir)
     
-    def _downloadFromQueue(inQueue, downloadList):#, out_queue):
-        while True:
-            args = inQueue.get() #Blocks until something is ready
-            if args is None:
-                break
-            return_args = download_file(*args)
-            if return_args is not None: #Download failed
-                inQueue.put(args) # Put it back in the que and try again
-            
-            # Let out_queue know the file has been processed
-            else:
-                outFile = args[0][1]['title']#first arg, 1th item is fileInfo series
-                downloadList.append(outFile)#'''
-    
-    # Start all proceses. They won't do anything until there's something in the queue
     mgr = multiprocessing.Manager()
     downloadQueue = mgr.Queue()
     downloadedList = mgr.list()
-    nDownloads = mgr.Value(value=0)
-    decomposeQueue = mgr.Queue()
     pool = multiprocessing.Pool(njobs)
     # prime the pool to process the queues
     pool.apply_async(_downloadFromQueue, (downloadQueue, downloadedList))
-    #pool.apply_async(_decompose)
-    
+    if outDir:
+        decomposeQueue = mgr.Queue()
+        pool.apply_async(_callTranslateFromQueue, (decomposeQueue, downloadedList))
     
     # Get task progress info
-    '''taskStatus = pd.DataFrame([t.status() for t in tasks])
-    taskStatus['active'] = True
-    taskStatus['downloading'] = False
-    nTasks = float(len(tasks))
-    t0 = time.time()
-    while taskStatus['active'].any() or not taskStatus['downloading'].all():'''
-    t0 = 1521135350
-    def getStatus():
-        allTasks = pd.DataFrame(ee.data.getTaskList())
-        
-        # Create a dataframe index based on the task creation time.
-        taskStatus = allTasks.copy()
-        taskStatus.index = pd.to_datetime(taskStatus['creation_timestamp_ms'], unit='ms')
-        del(taskStatus['creation_timestamp_ms'])
-        
-        # Convert the start and update timestamps to Python data types.
-        taskStatus.start_timestamp_ms = pd.to_datetime(taskStatus.start_timestamp_ms, unit='ms')
-        taskStatus = taskStatus.loc[taskStatus.index > pd.to_datetime(t0, unit='s')]
-        return taskStatus
-    taskStatus = getStatus()
+    t0 = time.time() - timestamp_offset * 60
+    
+    taskStatus = getStatus(t0)#(tasks, taskFilter='*!*info')
     
     #taskStatus = pd.DataFrame([t.status() for t in tasks])
     taskStatus['active'] = True
-    # nTasks = len(tasks)
-    nTasks = 7
+    nTasks = float(len(taskStatus))
+    #nTasks = 7
     t1 = time.time()
     # Wait until all tasks have finished running 
     #while taskStatus['active'].any():
     taskStatus['downloading'] = False
     taskStatus['downloadDone'] = False
     downloadDict = {}#pd.DataFrame(columns=['taskName', '])
+    
+    FAILED_STATES = ['FAILED', 'CANCELLED', 'CANCEL_REQUESTED']
     while not taskStatus.downloadDone.all():
         #inactive = taskStatus[~taskStatus.active]
         '''# Update status
         taskStatus.state = pd.DataFrame([t.status() for t in tasks])['state']#update state
         taskStatus['active'] = [t.active() for t in tasks] #update active column'''
-        taskStatus['state'] = getStatus()['state']
+        taskStatus['state'] = getStatus(t0)['state']
         
         # check if all tasks are finished
-        if not (taskStatus.state == 'COMPLETED').all():
-            failed = taskStatus[taskStatus.state.isin(['FAILED', 'CANCELLED', 'CANCEL_REQUESTED'])]
-            complete = taskStatus[taskStatus.state == 'COMPLETED']
-            downloadReady = complete[~complete.downloading]# EE complete, but not downloading yet
-            nFinished = len(complete) + len(failed)
+        #if not (taskStatus.state == 'COMPLETED').all():
+        failed = taskStatus.loc[taskStatus.state.isin(FAILED_STATES)]
+        complete = taskStatus.loc[taskStatus.state == 'COMPLETED']
+        downloadReady = complete.loc[~complete.downloading]# EE complete, but not downloading yet
+        nFinished = len(complete) + len(failed)
+        taskStatus.loc[failed.index, 'downloadDone'] = True #Mark as done
 
         # Check if download hasn't yet started for any complete files 
         if len(downloadReady) > 0:
             searchStrs = [task.description + '*' for i, task in downloadReady.iterrows()]
-            readyInfo = listDriveFiles(gDrive, gDriveFolder, searchPatterns=searchStrs)
+            readyInfo = listDriveFiles(gDrive, gDriveFolder, downloadDir, searchPatterns=searchStrs)
             for fileInfo in readyInfo.iterrows():
                 downloadQueue.put([fileInfo, gDrive, downloadDir, 0])
             # Set download status to True
             taskStatus.loc[downloadReady.index, 'downloading'] = True
             for s in searchStrs:
                 downloadDict[s[:-1]] = fnmatch.filter(readyInfo.title, s)
+        # If all tasks are done, break the while loop in _downloadFromQueue
+        if nFinished == nTasks:
+            downloadQueue.put(None)
+            taskStatus.downloading = True
         
         # Check to see if all files from any task are done
-        if outDir is not None: # If it is None, don't decompose
-            for i, taskName in complete.description.iteritems():
-                downloaded = sorted(fnmatch.filter(downloadedList, taskName + '*'))
-                fromGDrive = sorted(downloadDict[taskName])
-                if  downloaded == fromGDrive:#all([True else False for name in taskName if name in downloadedList]):
-                    fullPaths = [os.path.join(downloadDir, f) for f in downloaded]
-                    getDecomposeCommands()
-                    decomposeQueue.put([taskName, downloadDir, fullPaths, outDir, clipFile])
+        if outDir is not None: # If it's None, don't decompose
+            completeImgs = complete.loc[complete.description.apply(lambda x: not x.endswith('info')) & ~complete.downloadDone]
+            for i, taskName in completeImgs.description.iteritems():
+                # Check that text files have been downloaded
+                # First check that the tasks are complete
+                csvState = getStatus(t0, taskFilter=taskName+'*info').state
+                if (csvState == 'COMPLETED').all():
+                    csvInfo = listDriveFiles(gDrive, gDriveFolder, searchPatterns=taskName+'*info*')
+                    
+                    # If the files aren't completely downloaded yet, try the next task
+                    if len(getIncompleteFiles(csvInfo, outDir, sizeDifTolerance=500)) > 0:
+                        continue
+                    runCsv =  csvInfo[csvInfo.title.apply(lambda x: x.endswith('run_info.csv'))].iloc[0]
+                    bandCsv = csvInfo[csvInfo.title.apply(lambda x: x.endswith('band_info.csv'))].iloc[0]
+                    
+                    # Check that the images have all completed downlaoding
+                    downloaded = sorted(fnmatch.filter(downloadedList, taskName + '*.tif'))#assumes gee always exports tifs
+                    fromGDrive = sorted(fnmatch.filter(downloadDict[taskName], '*.tif'))
+                    if  downloaded == fromGDrive:#all([True else False for name in taskName if name in downloadedList]):
+                        #fullPaths = [os.path.join(downloadDir, f) for f in downloaded]
+                        runPath = os.path.join(downloadDir, runCsv.title)
+                        bandPath = os.path.join(downloadDir, bandCsv.title)
+                        commands = getDecomposeCommands(downloadDir, runPath, bandPath, outDir, clipFile)
+                        for cmd in commands:
+                            decomposeQueue.put(cmd)
+                        #import pdb; pdb.set_trace()
+                        taskStatus.loc[i, 'downloadDone'] = True
+                # If either of the CSVs or the image failed, mark the download as done
+                elif (csvState.isin(FAILED_STATES)).any() or taskStatus.loc[i, 'state'].isin(FAILED_STATES):
                     taskStatus.loc[i, 'downloadDone'] = True
+                else:
+                    continue
+            if taskStatus.downloadDone.all(): #Send termination signal to queue
+                decomposeQueue.put(None)
+        # If outDir is None, 
+        else:
+            # check if any downloads are done sure
+            if len(listDriveFiles(gDrive, gDriveFolder, downloadDir, sizeDifTolerance=500)) == 0 and taskStatus.downloading.all():
+                taskStatus.downloadDone = True #this will break out of for loop
+        #print 'downloads done:', len(taskStatus[taskStatus.downloadDone])
+        if logFile:
+            taskStatus.to_csv(logFile, index=False)
         
         if not silent:
             cumTime = time.time() - t1
@@ -601,7 +668,7 @@ def download_file(fileInfo, gDrive, outDirPath, startTime, nFiles=None):
     
     fileName = fileInfo['title']
     getFile = gDrive.CreateFile({'id': fileInfo['id']})
-
+    
     try:
         getFile.GetContentFile(os.path.join(outDirPath, fileName)) # Download file
     except Exception as e:
@@ -618,15 +685,16 @@ def download_file(fileInfo, gDrive, outDirPath, startTime, nFiles=None):
         sys.stdout.flush()
 
   
-def getIncompleteFiles(fileInfo, outDirPath):
+def getIncompleteFiles(fileInfo, outDirPath, sizeDifTolerance=0):
     '''Find any files that have not been completely downloaded'''
     
     fileInfo['localPath'] = fileInfo.title.apply(
                     lambda z: os.path.join(outDirPath, z))
-    existing = fileInfo[fileInfo.localPath.apply(
+    existing = fileInfo.loc[fileInfo.localPath.apply(
                     lambda z: os.path.exists(z))]
-    unfinished = existing[existing.fileSize.astype(int) !=\
-                  existing.localPath.apply(lambda z: os.stat(z).st_size)]
+    existing['sizeDif'] = existing.fileSize.astype(int) - existing.localPath.apply(lambda z: os.stat(z).st_size)
+    unfinished = existing.loc[existing.sizeDif >= sizeDifTolerance]
+
     # find files that either didn't finish or that don't exist locally
     fileInfo = pd.concat([unfinished, 
                        fileInfo[~fileInfo.title.isin(existing.title)]],
@@ -635,24 +703,24 @@ def getIncompleteFiles(fileInfo, outDirPath):
     return fileInfo
 
   
-def listDriveFiles(gDrive, gDirName, outDirPath=None, searchPatterns=None):
+def listDriveFiles(gDrive, gDirName, outDirPath=None, searchPatterns=None, sizeDifTolerance=0):
     '''List files in Google Drive folder `gDriveFolder`. If `outDirPath` 
     is given, return only files that have not been completely downloaded. If
     `searchPatterns` is given, return only files that match any of patterns'''
     
     # List files in gDrive folder
     gDriveFolder = gDrive.ListFile({'q': "mimeType='application/vnd.google-apps.folder' and title contains '"+gDirName+"'"}).GetList()
-    query = "'%s' in parents and title contains '.tif'" % gDriveFolder[0]['id']
+    query = "'%s' in parents" % gDriveFolder[0]['id']
     fileInfo = pd.DataFrame(gDrive.ListFile({'q': query}).GetList())
-    
+
     if outDirPath:
-        fileInfo = getIncompleteFiles(fileInfo, outDirPath)
+        fileInfo = getIncompleteFiles(fileInfo, outDirPath, sizeDifTolerance=sizeDifTolerance)
     
     # Filter out files that don't match one of the searchPatterns
     if searchPatterns:
         # If a single pattern is given, make it a list
         if not hasattr(searchPatterns, '__iter__'):
-            searchPatterns = list(searchPatterns)
+            searchPatterns = [searchPatterns]
         matches = []
         for pattern in searchPatterns:
             matches.extend(fnmatch.filter(fileInfo.title, pattern))
@@ -677,27 +745,7 @@ def getGdriveFiles(gDirName, outDirPath, njobs=4, gDrive=None, searchPatterns=No
         if not os.path.isdir(outDirPath):
             os.mkdir(outDirPath)
         
-        # List files in gDrive folder
-        '''query = "'%s' in parents and title contains '.tif'" % gDir[0]['id']
-        fileList = pd.DataFrame(gDrive.ListFile({'q': query}).GetList())
-        
-        def getIncompleteFiles(fileInfo):
-            #fileInfo = pd.DataFrame(fileList)
-            fileInfo['localPath'] = fileInfo.title.apply(
-                            lambda z: os.path.join(outDirPath, z))
-            existing = fileInfo[fileInfo.localPath.apply(
-                            lambda z: os.path.exists(z))]
-            unfinished = existing[existing.fileSize.astype(int) !=\
-                          existing.localPath.apply(lambda z: os.stat(z).st_size)]
-            # find files that either didn't finish or that don't exist locally
-            files = pd.concat([unfinished, 
-                               fileInfo[~fileInfo.title.isin(existing.title)]],
-                               ignore_index=True)
-            #return [dict(r) for i, r in fileList.iterrows()]#back to what download_files expects
-            return files
-        
-        files = getIncompleteFiles(fileList)'''
-        
+        # List files in gDrive folder        
         files = listDriveFiles(gDrive, gDir, outDirPath, searchPatterns)
         
         if len(files) == 0:
@@ -754,33 +802,53 @@ def getInfoFromName(name):
     return info
     
 
-def callWarp(callInfo, silent=True):
-    outFile, command = callInfo[:1]
+def callTranslate(callInfo, silent=True):
+    outFile, command = callInfo[:2]
     if len(callInfo) > 2:
         outFile, command, count, nCommands, startTime = callInfo
         silent = False
-    cumTime = time.time() - startTime
-    formatObj = count, nCommands, float(count)/nCommands * 100, cumTime/60
+        cumTime = time.time() - startTime
+        formatObj = count, nCommands, float(count)/nCommands * 100, cumTime/60
     if not silent:
         sys.stdout.write('\rProcessing %s of %s files (%.1f%%) | cum. time: %.1f mins.' % formatObj)
         sys.stdout.flush()
-        subprocess.call(command, shell=True)
+    subprocess.call(command, shell=True)
     desc = 'LandTrendr data created with Google Earth Engine. Filename is in the form {version}_{index}_{dateRange}_{tileID}_{nVertices}_{processingDate}_{LTdataType}_{LTdataContent}.tif'
     createMetadata(sys.argv, outFile, description=desc)
 
 
-def getDecomposeCommands(eeTaskName, chunkDir, pieces, outImgTypes, outDir, clipFile, tileIdField='name', proj='EPSG:5070', nTiles=9, count=None, nCommands=None, startTime=None):
+def getDecomposeCommands(chunkDir, runInfoTxt, bandInfoTxt, outDir, clipFile, tileIdField='name', proj='EPSG:5070', nTiles=9, count=None, nTasks=1, nCommands=None, startTime=None, overwrite=False):
     
+    t0 = time.time()
+
+    if not os.path.isdir(outDir):
+        warnings.warn('outDir does not exist... Creating outDir %s' % outDir)
+        os.mkdir(outDir)
     
     # get info about the GEE run
-    info = getInfoFromName(eeTaskName)
-    import pdb; pdb.set_trace()
+    runInfo = pd.read_csv(runInfoTxt).loc[0]
+    runInfo['dateRange'] = (runInfo.startDay + runInfo.endDay).replace('-', '')
+    runInfo['segIndex'] = runInfo.segIndex.lower()
+    runInfo['processingDate'] = datetime.now().strftime('%Y%m%d')
+    bandInfo = pd.read_csv(bandInfoTxt)
+    if 'run_name' in runInfo:
+        eeTaskName = runInfo.run_name
+    elif 'runName' in runInfo:
+        eeTaskName = runInfo.runName
+    else:# try to infer from 
+        raise ValueError('no run name specified in runInfo: %s' % runInfoTxt)
+    
+    # find the tif chunks
+    tifs = []
+    for root, dirnames, filenames in os.walk(chunkDir):
+        for filename in fnmatch.filter(filenames, eeTaskName + '*.tif'):
+            tifs.append(os.path.join(root, filename))    
     
     # make a list of tile tifs
     vrtFile = os.path.join(chunkDir, eeTaskName + '.vrt')
     tileListFile = vrtFile.replace('.vrt', '_filelist.txt')
     with open(tileListFile, 'w') as tileList:
-        for piece in pieces:
+        for piece in tifs:
             tileList.write(piece + '\n')
 
     # create vrt
@@ -788,32 +856,31 @@ def getDecomposeCommands(eeTaskName, chunkDir, pieces, outImgTypes, outDir, clip
     subprocess.call(cmd, shell=True)
 
     # make a list of band ranges for each out type
-    vertStops = []
-    for vertType in range(4):  
-        vertStops.append(vertType*info['nVert']+1)
-
-    nYears = (info['endYear'] - info['startYear']) + 1
-    ftvStops = []  
-    for ftvType in range(1, len(outImgTypes)-2):  
-        ftvStops.append(ftvType*nYears+vertStops[-1])
-
-    bandStops = vertStops+ftvStops
-    bandRanges = [range(bandStops[i],bandStops[i+1]) for i in range(len(bandStops)-1)]
-
+    outImgTypes = bandInfo.name.unique()
+    tiles = attributes_to_df(clipFile)
+    nTiles = len(tiles[tiles[runInfo.featureKey] == runInfo.featureValue])
+    nCommands = len(outImgTypes) * nTiles * nTasks
     
     # Check that the directory structure exists. If not, build it.
-    indexDir = os.path.join(outDir, '%s_%s' % (info['indexID'], info['dateRange']))
+    if not os.path.isdir(outDir):
+        os.mkdir(outDir)
+    indexDir = os.path.join(outDir, '{segIndex}_{dateRange}'.format(**runInfo))
     if not os.path.isdir(indexDir):
         os.mkdir(indexDir)
     
     # Open the tile layer and loop through each tile within this region
+    #   Use attribute value instead of geographic bounds of vrt because GEE
+    #   often includes nodata buffer of unpredctable size
     dataset = ogr.Open(clipFile)
     layer = dataset.GetLayer()
-    filterString = "%s = '%s'" % (info['key'], info['value'])
+    filterString = "{featureKey} = {featureValue}".format(**runInfo)
     layer.SetAttributeFilter(filterString)
-    feature = layer.GetNextFeature()
-    i = 1
     
+    # Make sure the filter matches the number of Tiles
+    if layer.GetFeatureCount() != nTiles:
+        raise RuntimeError('%s is not a valid filter string for clipFile %s' % (filterString, clipFile))
+    
+    feature = layer.GetNextFeature()
     commands = []
     c = count
     while feature:
@@ -827,162 +894,64 @@ def getDecomposeCommands(eeTaskName, chunkDir, pieces, outImgTypes, outDir, clip
         projwin = '{} {} {} {}'.format(extent[0], extent[3], extent[1], extent[2])    
      
         # make a list of all the gdal_translate commands needed for the ee conus chunk
-        if not os.path.isdir(outDir):
-            os.mkdir(outDir)
         # loop through the datasets and pull them out of the mega stack and write them to the define outDir
+        info = runInfo.to_dict()
         info['tile'] = tileID
-        for i in range(len(outImgTypes)):   
-            #outBname = eeTaskName+'-'+outImgTypes[i]
-            info['outType'] = outImgTypes[i]
-            outBname = 'LTV3_{indexID}_{dateRange}_{tile}_{nVert}_{processingDate}_{outType}'.format(**info)
+        for outType in outImgTypes:
+            info['outType'] = outType
+            outBname = 'LTV3_{segIndex}_{dateRange}_{tile}_{nVerts}_{processingDate}_{outType}.tif'.format(**info)
             outFile = os.path.join(tileDir, outBname)
-            if os.path.exists(outFile):
+            if os.path.exists(outFile) and not overwrite:
                 continue
-            bands = ' -b '+' -b '.join([str(band) for band in bandRanges[i]])
-            cmd = 'gdal_translate -q --config GDAL_DATA "/usr/lib/anaconda/share/gdal" -of GTiff -co "TILED=YES" -co "INTERLEAVE=BAND" -co "BIG_TIFF=YES" -a_srs ' + proj + bands + ' -projwin '+projwin+' '+ vrtFile + ' ' + outFile
+            bands = bandInfo.loc[bandInfo.name == outType, 'band']
+            bandStr = ' -b ' + ' -b '.join([str(b) for b in bands])
+            cmd = 'gdal_translate -q --config GDAL_DATA "/usr/lib/anaconda/share/gdal" -of GTiff -co "TILED=YES" -co "INTERLEAVE=BAND" -co "BIGTIFF=YES" -a_srs ' + proj + bandStr + ' -projwin '+projwin+' '+ vrtFile   + ' ' + outFile
             if count is None:
                 commands.append((outFile, cmd))
             else:
                 commands.append((outFile, cmd, c, nCommands, startTime))
                 c += 1
+        
         feature = layer.GetNextFeature()
-        i += 1
-    if i != nTiles:
-        raise RuntimeError('%s is not a valid filter string for clipFile %s' % (filterString, clipFile))
-    
+
     return commands
 
 
-def clipAndDecompose(chunkDir, outDir, clipFile,  njobs=0, tileIdField='name', proj='EPSG:5070', returnOutDirs=False):
-    
-    
+def clipAndDecompose(chunkDir, outDir, clipFile, searchStr='', njobs=1, tileIdField='name', proj='EPSG:5070', returnOutDirs=False, overwrite=False):
+    ''' 
+    Clip and decompose the stack of all images that match searchStr. This function is mainly for processing files `after` all potential files have been downloaded. To dynamically process files as downloads from GEE complete, run clip_and_decompose.py with logFile=True logFile=pathToLogFile
+    '''
     t0 = time.time()
-    
     njobs = int(njobs)
-    
-    if not os.path.isdir(outDir):
-        warnings.warn('outDir does not exist... Creating outDir %s' % outDir)
-        os.mkdir(outDir)
-    
-    # define the list of replacement types in the new out images    
-    outImgTypes = ['vert_yrs.tif',
-                'vert_src.tif',
-                'vert_fit.tif',
-                'ftv_idx.tif',
-                'ftv_tcb.tif',
-                'ftv_tcg.tif',
-                'ftv_tcw.tif',
-                'ftv_ndvi.tif',
-                'ftv_ndsi.tif']
-    
-    # find the tif chunks
-    tifs = []
-    for root, dirnames, filenames in os.walk(chunkDir):
-        for filename in fnmatch.filter(filenames, '*.tif'):
-            tifs.append(os.path.join(root, filename))    
-    
-    # set the unique names 
-    names = list(set(['-'.join(fn.split('-')[0:6]) for fn in tifs]))
-    nTiles = 9
-    nCommands = len(names) * len(outImgTypes) * nTiles
-    # loop through each unique names, find the matching set, merge them as vrt, and then decompose them
-    c = 1 #counter for total number of commands submitted
-    commands = [] #record all commands to run
-    for name in names:
-        #name = names[0]  
-        runName = os.path.basename(name)
-        # find the files that belong to this set  
-        matches = []
-        for tif in tifs:   
-            if name in tif:
-                matches.append(tif)
-    
-        '''# get info about the GEE run
-        info = getInfoFromName(runName)
-        import pdb; pdb.set_trace()
-        
-        # make a list of tile tifs
-        vrtFile = os.path.join(chunkDir, runName + '.vrt')
-        tileListFile = vrtFile.replace('.vrt', '_filelist.txt')
-        with open(tileListFile, 'w') as tileList:
-            for match in matches:
-                tileList.write(match + '\n')
-    
-        # create vrt
-        cmd = 'gdalbuildvrt -input_file_list %s %s' % (tileListFile, vrtFile)
-        subprocess.call(cmd, shell=True)
-    
-        # make a list of band ranges for each out type
-        vertStops = []
-        for vertType in range(4):  
-            vertStops.append(vertType*info['nVert']+1)
-
-        nYears = (info['endYear'] - info['startYear']) + 1
-        ftvStops = []  
-        for ftvType in range(1, len(outImgTypes)-2):  
-            ftvStops.append(ftvType*nYears+vertStops[-1])
-
-        bandStops = vertStops+ftvStops
-        bandRanges = [range(bandStops[i],bandStops[i+1]) for i in range(len(bandStops)-1)]
-
-        
-        # Check that the directory structure exists. If not, build it.
-        indexDir = os.path.join(outDir, '%s_%s' % (info['indexID'], info['dateRange']))
-        if not os.path.isdir(indexDir):
-            os.mkdir(indexDir)
-        
-        # Open the tile layer and loop through each tile within this region
-        dataset = ogr.Open(clipFile)
-        layer = dataset.GetLayer()
-        filterString = "%s = '%s'" % (info['key'], info['value'])
-        layer.SetAttributeFilter(filterString)
-        feature = layer.GetNextFeature()
-        i = 1
-        while feature:
-            tileID = feature.GetField(tileIdField)
-            tileDir = os.path.join(indexDir, tileID)
-            if not os.path.isdir(tileDir):
-                os.mkdir(tileDir)
-
-            # format the exent as -projwin arguments for gdal translate
-            extent = feature.GetGeometryRef().GetEnvelope()
-            projwin = '{} {} {} {}'.format(extent[0], extent[3], extent[1], extent[2])    
-         
-            # make a list of all the gdal_translate commands needed for the ee conus chunk
-            if not os.path.isdir(outDir):
-                os.mkdir(outDir)
-            # loop through the datasets and pull them out of the mega stack and write them to the define outDir
-            info['tile'] = tileID
-            for i in range(len(outImgTypes)):   
-                #outBname = runName+'-'+outImgTypes[i]
-                info['outType'] = outImgTypes[i]
-                outBname = 'LTV3_{indexID}_{dateRange}_{tile}_{nVert}_{processingDate}_{outType}'.format(**info)
-                outFile = os.path.join(tileDir, outBname)
-                if os.path.exists(outFile):
-                    continue
-                bands = ' -b '+' -b '.join([str(band) for band in bandRanges[i]])
-                cmd = 'gdal_translate -q --config GDAL_DATA "/usr/lib/anaconda/share/gdal" -of GTiff -co "TILED=YES" -co "INTERLEAVE=BAND" -co "BIG_TIFF=YES" -a_srs ' + proj + bands + ' -projwin '+projwin+' '+ vrtFile + ' ' + outFile
-                commands.append((outFile, cmd, c, nCommands, t0))
-                c += 1
-            feature = layer.GetNextFeature()
-            i += 1
-        if i != nTiles:
-            raise RuntimeError('%s is not a valid filter string for clipFile %s' % (filterString, clipFile))#'''
-        cmds = getDecomposeCommands(runName, chunkDir, matches, outImgTypes, outDir, clipFile, nTiles=nTiles, count=c, nCommands=nCommands, startTime=t0)
+    # find all the runInfo txt files
+    runInfoFiles = glob.glob(os.path.join(chunkDir, searchStr + '*run_info.csv'))
+    commands = []
+    c = 1
+    nTasks = len(runInfoFiles)
+    #import pdb; pdb.set_trace()
+    for runInfoTxt in runInfoFiles:
+        bandInfoTxt = runInfoTxt.replace('run_info', 'band_info')
+        # Check if there are any GEE chunks for these text files
+        if len(glob.glob(runInfoTxt.replace('-run_info.csv', '*.tif'))) == 0:
+            nTasks -= 1
+            continue
+        cmds = getDecomposeCommands(chunkDir, runInfoTxt, bandInfoTxt, outDir, clipFile, count=c, nTasks=nTasks, startTime=t0, overwrite=overwrite)
         c =+ len(cmds)
         commands.extend(cmds)
-        
+
+    import pdb; pdb.set_trace()
+    
     if njobs > 1:
         pool = multiprocessing.Pool(njobs)
-        pool.map(callWarp, commands, chunksize=1)
+        pool.map(callTranslate, commands, chunksize=1)
         pool.close()
         pool.join()
         
     else:
-        for cmd in commands: subprocess.call(cmd, shell=True)
+        for cmd in commands: callTranslate(cmd)
     
     # Delete source files
-    shutil.rmtree(chunkDir)
+    #shutil.rmtree(chunkDir)
     
     print '\n\nTotal processing time: %.1f minutes' % ((time.time() - t0)/60)
 

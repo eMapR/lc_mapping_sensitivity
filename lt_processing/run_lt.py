@@ -50,8 +50,8 @@ def main(sleep=.5, njobs=10, silent=True):
     
     tasks = []
     if 'outDirPath' in globals():
-        ltee.listenAndDownladTasks(tasks, outDirPath, gDriveFolder, gDrive, silent=False)#'''
-    
+        #ltee.listenAndDownladTasks(tasks, outDirPath, gDriveFolder, gDrive, outDir=outDirPath, clipFile=clipFile, silent=False, timestamp_offset=timestamp_offset)#'''
+        ltee.listenAndDownladTasks(tasks, outDirPath, gDriveFolder, gDrive, silent=False, timestamp_offset=timestamp_offset, logFile=logFile)#'''
 
 
 
