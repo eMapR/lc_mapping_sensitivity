@@ -7,7 +7,7 @@ Created on Tue Oct 31 13:48:29 2017
 Make masks/reference rasters clipped to the shape of each study region
 
 Usage:
-    make_region_masks.py <region_path> <tile_path> <reference_path> <out_dir> [--id_field=<str>]
+    make_region_masks.py <region_path> <tile_path> <reference_path> <out_dir> [--id_field=<str>] [--ref_basename=<str>]
 
     region_path - path to vector file where each feature is the boundary of a region
     tile_path - path to vector file where each feature is a tile
@@ -15,8 +15,9 @@ Usage:
     out_dir - top level output directory
 
 Options:
-    -h, --help        show this screen
-    --id_field=<str>  field in region_path vector containing unique IDs[default: region_id]
+    -h, --help              show this screen
+    --id_field=<str>        field in region_path vector containing unique IDs[default: region_id]
+    --ref_basename=<str>    name of reference dataset (e.g., nlcd, canopy) [default: nlcd]
 
 example:
 make_region_masks.py /vol/v1/proj/stem_improv_paper/vector/regions/study_regions.shp /vol/v1/proj/stem_improv_paper/vector/regions/study_region_tiles.shp /vol/v1/general_files/datasets/spatial_data/nlcd/nlcd_2001_v2/nlcd_2001_landcover_clipped_to_conus_tiles.tif /vol/v1/proj/stem_improv_paper/region_models
@@ -37,7 +38,7 @@ from mosaic_by_tsa import kernel_from_shp, get_offset_array_indices
 from lthacks import attributes_to_df, array_to_raster
 
 
-def main(region_path, tile_path, reference_path, out_dir, id_field='region_id'):
+def main(region_path, tile_path, reference_path, out_dir, id_field='region_id', ref_basename='nlcd'):
     
     df = attributes_to_df(region_path) 
     tile_info = attributes_to_df(tile_path)
@@ -81,9 +82,12 @@ def main(region_path, tile_path, reference_path, out_dir, id_field='region_id'):
             coords_to_shp(region_tiles, region_path, out_vector)
         
         # Make a map of reference NLCD
+        ds = gdal.Open(out_vector.replace(vector_ext, '.tif'))
+        mask = ds.ReadAsArray() == 255
+        ds = None
         nlcd_year = re.search('\d\d\d\d', reference_path).group() # finds the first one (potentially buggy)
-        out_ref_map = os.path.join(region_dir, 'nlcd_%s_%s.tif' % (nlcd_year, id_str))
-        if not os.path.exists(out_ref_map):
+        out_ref_map = os.path.join(region_dir, '%s_%s_%s.tif' % (ref_basename, nlcd_year, id_str))
+        if not False:#os.path.exists(out_ref_map):
             ref_ds = gdal.Open(reference_path)
             ref_tx = ref_ds.GetGeoTransform()
             ref_shape = ref_ds.RasterYSize, ref_ds.RasterXSize
@@ -100,6 +104,7 @@ def main(region_path, tile_path, reference_path, out_dir, id_field='region_id'):
             ar_ref = ref_ds.ReadAsArray(ref_inds[2], ref_inds[0], ref_n_cols, ref_n_rows)
             ar = np.full((n_rows, n_cols), 255)
             ar[ar_inds[0]:ar_inds[1], ar_inds[2]:ar_inds[3]] = ar_ref
+            ar[mask] = 255
             
             tx = clip_coords.ul_x, 30, 0, clip_coords.ul_y, 0, -30
             prj = ref_ds.GetProjection()
