@@ -495,7 +495,6 @@ def _downloadFromQueue(inQueue, downloadList):#, out_queue):
     while True:
         args = inQueue.get() #Blocks until something is ready
         if args is None:
-            print '\n#######None########\n'
             break
         return_args = download_file(*args)
         if return_args is not None: #Download failed
@@ -507,7 +506,7 @@ def _downloadFromQueue(inQueue, downloadList):#, out_queue):
             downloadList.append(outFile)#'''
 
 
-def _callTranslateFromQueue(inQueue, downloadedList):#, out_queue):
+def _callTranslateFromQueue(inQueue):#, out_queue):
 
     while True:
         cmd = inQueue.get() #Blocks until something is ready
@@ -518,7 +517,7 @@ def _callTranslateFromQueue(inQueue, downloadedList):#, out_queue):
         callTranslate(cmd)
             
             
-def listenAndDownladTasks(tasks, downloadDir, gDriveFolder, gDrive=None, outDir=None, clipFile=None, sleep=.5, njobs=10, silent=True, timestamp_offset=30, logFile=False):
+def listenAndDownladTasks(tasks, downloadDir, gDriveFolder, gDrive=None, outDir=None, clipFile=None, sleep=.5, njobs=10, silent=True, timestamp_offset=30, logFile=True):
     
     # check that clipFile exists if outDir was specified
     if outDir:
@@ -653,9 +652,13 @@ def listenAndDownladTasks(tasks, downloadDir, gDriveFolder, gDrive=None, outDir=
     
     # Close all processes
     for _ in range(njobs): 
-        downloadQueue.put(None) # add kill switch to break out of while loop
+        downloadQueue.put(None) # add kill switch to break of while loop in downloadFrom
+    if outDir:
+        for _ in range(njobs):
+            decomposeQueue.put(None)
     pool.close()
     pool.join()
+    
         
     if len(failed) > 0:
         print '\n\nIDs of failed tasks:\n\t' + '\n\t'.join(failed['id'].tolist())
@@ -803,6 +806,7 @@ def getInfoFromName(name):
     
 
 def callTranslate(callInfo, silent=True):
+    ''' if overwrite is True, check if outfile exists and delete any that match pattern'''
     outFile, command = callInfo[:2]
     if len(callInfo) > 2:
         outFile, command, count, nCommands, startTime = callInfo
@@ -814,6 +818,7 @@ def callTranslate(callInfo, silent=True):
         sys.stdout.flush()
     subprocess.call(command, shell=True)
     desc = 'LandTrendr data created with Google Earth Engine. Filename is in the form {version}_{index}_{dateRange}_{tileID}_{nVertices}_{processingDate}_{LTdataType}_{LTdataContent}.tif'
+    ''' add command str to desc'''
     createMetadata(sys.argv, outFile, description=desc)
 
 
@@ -855,11 +860,12 @@ def getDecomposeCommands(chunkDir, runInfoTxt, bandInfoTxt, outDir, clipFile, ti
     cmd = 'gdalbuildvrt -input_file_list %s %s' % (tileListFile, vrtFile)
     subprocess.call(cmd, shell=True)
 
-    # make a list of band ranges for each out type
+    # calculate the number of commands
     outImgTypes = bandInfo.name.unique()
     tiles = attributes_to_df(clipFile)
     nTiles = len(tiles[tiles[runInfo.featureKey] == runInfo.featureValue])
-    nCommands = len(outImgTypes) * nTiles * nTasks
+    if not nCommands:
+        nCommands = len(outImgTypes) * nTiles * nTasks
     
     # Check that the directory structure exists. If not, build it.
     if not os.path.isdir(outDir):
@@ -919,7 +925,7 @@ def getDecomposeCommands(chunkDir, runInfoTxt, bandInfoTxt, outDir, clipFile, ti
 
 def clipAndDecompose(chunkDir, outDir, clipFile, searchStr='', njobs=1, tileIdField='name', proj='EPSG:5070', returnOutDirs=False, overwrite=False):
     ''' 
-    Clip and decompose the stack of all images that match searchStr. This function is mainly for processing files `after` all potential files have been downloaded. To dynamically process files as downloads from GEE complete, run clip_and_decompose.py with logFile=True logFile=pathToLogFile
+    Clip and decompose the stack of all images that match searchStr. This function is mainly for processing files `after` all potential files have been downloaded. To dynamically process files as downloads from GEE complete, run clip_and_decompose.py with downloadLog=True or downloadLog=pathToLogFile
     '''
     t0 = time.time()
     njobs = int(njobs)
