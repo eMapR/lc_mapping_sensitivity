@@ -14,11 +14,12 @@ import numpy as np
 import pandas as pd
 
 sys.path.append('/vol/v2/stem/stem-git/scripts')
+from get_stratified_random_pixels import parse_bins
 from evaluation.evaluation import confusion_matrix_by_area
 from lthacks import createMetadata
 
 
-def main(ref_path, pred_path, out_txt, target_col, ref_nodata, pred_nodata):
+def main(ref_path, pred_path, out_txt, target_col, ref_nodata, pred_nodata, bins=None):
     
     ref_nodata = int(ref_nodata)
     pred_nodata = int(pred_nodata)
@@ -36,8 +37,11 @@ def main(ref_path, pred_path, out_txt, target_col, ref_nodata, pred_nodata):
     sample['col'] = cols.ravel()
     sample.drop(sample.index[(sample[target_col]==ref_nodata) | (sample.prediction == pred_nodata)])
     
-    unique_vals = np.unique(ar_t[ar_t != ref_nodata])
-    bins = zip(unique_vals - 1, unique_vals)
+    if isinstance(bins, str):
+        bins = parse_bins(bins)
+    if not bins:
+        unique_vals = np.unique(ar_t[ar_t != ref_nodata])
+        bins = zip(unique_vals - 1, unique_vals)
     
     cm, cm_smp = confusion_matrix_by_area(ar_p, ar_t, sample, pred_nodata, ref_nodata, bins=bins, target_col=target_col, out_txt=out_txt, match='best')
     #cm.to_csv(out_txt, sep='\t')
