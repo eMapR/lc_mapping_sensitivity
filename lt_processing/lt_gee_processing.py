@@ -544,11 +544,12 @@ def listenAndDownladTasks(tasks, downloadDir, gDriveFolder, gDrive=None, outDir=
     mgr = multiprocessing.Manager()
     downloadQueue = mgr.Queue()
     downloadedList = mgr.list()
-    decomposeQueue = mgr.Queue()
     pool = multiprocessing.Pool(njobs)
     # prime the pool to process the queues
     pool.apply_async(_downloadFromQueue, (downloadQueue, downloadedList))
-    pool.apply_async(_callTranslateFromQueue, (decomposeQueue, ))
+    if outDir:
+        decomposeQueue = mgr.Queue()
+        pool.apply_async(_callTranslateFromQueue, (decomposeQueue, ))
     
     # Get task progress info
     t0 = time.time() - timestamp_offset * 60
@@ -601,7 +602,6 @@ def listenAndDownladTasks(tasks, downloadDir, gDriveFolder, gDrive=None, outDir=
         completeImgs = complete.loc[complete.description.apply(lambda x: not x.endswith('info')) & ~complete.downloadDone]
         if outDir is not None: # If it's None, don't decompose
             for i, taskName in completeImgs.description.iteritems():
-                ''' move if outdir is not None else statement inside for loop'''
                 # Check that text files have been downloaded
                 # First check that the tasks are complete
                 csvState = getStatus(t0, taskFilter=taskName+'*info').state
@@ -695,7 +695,7 @@ def getIncompleteFiles(fileInfo, outDirPath, sizeDifTolerance=0):
     fileInfo['localPath'] = fileInfo.title.apply(
                     lambda z: os.path.join(outDirPath, z))
     existing = fileInfo.loc[fileInfo.localPath.apply(
-                    lambda z: os.path.exists(z))]
+                    lambda z: os.path.exists(z))].copy()
     existing['sizeDif'] = existing.fileSize.astype(int) - existing.localPath.apply(lambda z: os.stat(z).st_size)
     unfinished = existing.loc[existing.sizeDif >= sizeDifTolerance]
 
