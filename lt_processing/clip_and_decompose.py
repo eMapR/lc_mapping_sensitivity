@@ -57,6 +57,7 @@ def main(chunkDir, outDir, clipFile, searchStr='', njobs=1, tileIdField='name', 
         FAILED_STATES = ['FAILED', 'CANCELLED', 'CANCEL_REQUESTED']
         inQueue = []
         t0 = time.time()
+        
         while not imgTasks.description.isin(inQueue).all():
             # read the log again
             try:
@@ -71,28 +72,32 @@ def main(chunkDir, outDir, clipFile, searchStr='', njobs=1, tileIdField='name', 
             imgTasks = log.loc[(log.task_type == 'EXPORT_IMAGE') &\
                                 ~log.description.isin(inQueue)]
             csvTasks = log.loc[(log.task_type == 'EXPORT_FEATURES')]
+            #import pdb; pdb.set_trace()
             for i, task in imgTasks.loc[(imgTasks.state == 'COMPLETED') & imgTasks.downloadDone].iterrows():
                 # Find the csvs from this run
-                csvInfo = csvTasks[[task in d for d in csvTasks.description]]
+                
+                csvInfo = csvTasks[[task.description in d for d in csvTasks.description]]
                 # There should be 2: one with run info and one with band info
+                #import pdb; pdb.set_trace()
                 if len(csvInfo) == 2:
-                    runInfoTask = log.loc[log.description == task + '-run_info', 'description'].iloc[0]
-                    bandInfoTask = log.loc[log.description == task + '-band_info', 'description'].iloc[0]
+                    runInfoTask = log.loc[log.description == (task.description + '-run_info'), 'description'].iloc[0]
+                    bandInfoTask = log.loc[log.description == (task.description + '-band_info'), 'description'].iloc[0]
                     runPath = os.path.join(chunkDir, runInfoTask + '.csv')
                     bandPath = os.path.join(chunkDir, bandInfoTask + '.csv')
                     commands = ltee.getDecomposeCommands(chunkDir, runPath, bandPath, outDir, clipFile, tileIdField=tileIdField, proj=proj, nTasks=len(imgTasks), startTime=t0, overwrite=overwrite)
                     for cmd in commands:
                         queue.put(cmd)
-                    inQueue.append(task)
+                    inQueue.append(task.description)
+                    #import pdb; pdb.set_trace()
                 
                 # If any of them failed
                 elif csvInfo.state.isin(FAILED_STATES).any():
                     # Say that it's in the queue
-                    inQueue.append(task)
+                    inQueue.append(task.description)
             
             # If any of the image tasks failed, say it's in the queue
             for i, task in log.loc[(log.task_type == 'EXPORT_IMAGE') & log.state.isin(FAILED_STATES)].iterrows():
-                inQueue.append(task)
+                inQueue.append(task.description)
                 
             # check the mtime of the log file and if it's too old, break
             last_modified = os.stat(downloadLog).st_mtime
