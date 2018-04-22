@@ -35,13 +35,18 @@ import lt_gee_processing as ltee
 def main(chunkDir, outDir, clipFile, searchStr='', njobs=1, tileIdField='name', proj='EPSG:5070', returnOutDirs=False, overwrite=False, downloadLog=None, maxWait=14400):
     
     # Set up a pool and a queue to wait for downloads to finish
+    if not os.path.isdir(outDir):
+        os.mkdir(outDir)
+    
+    if not os.path.exists(chunkDir):
+        raise IOError('chunkDir does not exist: %s' % chunkDir)
     if downloadLog:
         maxWait = int(maxWait)
         
         mgr = multiprocessing.Manager()
         queue = mgr.Queue()
         pool = multiprocessing.Pool(njobs)
-        pool.apply_async(ltee._callTranslateFromQueue, (queue, ))
+        #pool.apply_async(ltee._callTranslateFromQueue, (queue, ))
         
         # Check if the log file exists
         if os.path.isfile(downloadLog):
@@ -52,12 +57,13 @@ def main(chunkDir, outDir, clipFile, searchStr='', njobs=1, tileIdField='name', 
                 raise IOError('download log does not exist: %s' % downloadLog)
             log = pd.read_csv(downloadLog)
         imgTasks = log.loc[(log.task_type == 'EXPORT_IMAGE')]
+        nTasks = len(imgTasks)
         
         # read the download log
         FAILED_STATES = ['FAILED', 'CANCELLED', 'CANCEL_REQUESTED']
         inQueue = []
         t0 = time.time()
-        
+        nCommands = 0
         while not imgTasks.description.isin(inQueue).all():
             # read the log again
             try:
@@ -73,6 +79,7 @@ def main(chunkDir, outDir, clipFile, searchStr='', njobs=1, tileIdField='name', 
                                 ~log.description.isin(inQueue)]
             csvTasks = log.loc[(log.task_type == 'EXPORT_FEATURES')]
             #import pdb; pdb.set_trace()
+            
             for i, task in imgTasks.loc[(imgTasks.state == 'COMPLETED') & imgTasks.downloadDone].iterrows():
                 # Find the csvs from this run
                 
@@ -85,9 +92,15 @@ def main(chunkDir, outDir, clipFile, searchStr='', njobs=1, tileIdField='name', 
                     runPath = os.path.join(chunkDir, runInfoTask + '.csv')
                     bandPath = os.path.join(chunkDir, bandInfoTask + '.csv')
                     commands = ltee.getDecomposeCommands(chunkDir, runPath, bandPath, outDir, clipFile, tileIdField=tileIdField, proj=proj, nTasks=len(imgTasks), startTime=t0, overwrite=overwrite)
-                    for cmd in commands:
-                        queue.put(cmd)
+                    for i, (outFile, cmd) in enumerate(commands):
+                        queue.put([outFile, cmd, i + nCommands, nCommands, t0])
+                        #print queue.qsize()
+                        pool.apply_async(ltee._callTranslateFromQueue, (queue, ))
+                    #print queue.qsize()
+                    nCommands += len(commands)
                     inQueue.append(task.description)
+                    #sys.stdout.write('\rSubmitted commands for %s of %s tasks' % (len(inQueue), nTasks))
+                    #sys.stdout.flush()
                     #import pdb; pdb.set_trace()
                 
                 # If any of them failed
@@ -97,7 +110,8 @@ def main(chunkDir, outDir, clipFile, searchStr='', njobs=1, tileIdField='name', 
             
             # If any of the image tasks failed, say it's in the queue
             for i, task in log.loc[(log.task_type == 'EXPORT_IMAGE') & log.state.isin(FAILED_STATES)].iterrows():
-                inQueue.append(task.description)
+                if not task.description in inQueue:
+                    inQueue.append(task.description)
                 
             # check the mtime of the log file and if it's too old, break
             last_modified = os.stat(downloadLog).st_mtime
