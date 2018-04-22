@@ -93,10 +93,9 @@ def main(chunkDir, outDir, clipFile, searchStr='', njobs=1, tileIdField='name', 
                     bandPath = os.path.join(chunkDir, bandInfoTask + '.csv')
                     commands = ltee.getDecomposeCommands(chunkDir, runPath, bandPath, outDir, clipFile, tileIdField=tileIdField, proj=proj, nTasks=len(imgTasks), startTime=t0, overwrite=overwrite)
                     for i, (outFile, cmd) in enumerate(commands):
-                        queue.put([outFile, cmd, i + nCommands, nCommands, t0])
-                        #print queue.qsize()
+                        #import pdb; pdb.set_trace()
+                        queue.put([outFile, cmd, i + nCommands, nCommands + len(commands), t0])
                         pool.apply_async(ltee._callTranslateFromQueue, (queue, ))
-                    #print queue.qsize()
                     nCommands += len(commands)
                     inQueue.append(task.description)
                     #sys.stdout.write('\rSubmitted commands for %s of %s tasks' % (len(inQueue), nTasks))
